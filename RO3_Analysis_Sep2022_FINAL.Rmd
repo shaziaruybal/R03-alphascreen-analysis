@@ -1,0 +1,289 @@
+---
+title: 'R03 Analysis for paper'
+author: "Shazia Ruybal-Pesantez"
+date: "09/09/2022"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide 
+    fig_width: 6
+    fig_height: 4
+    theme: cosmo
+---
+
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      tidy = TRUE,
+                      fig.width = 6, 
+                      fig.height = 4, 
+                      fig.path = here::here("figures/"),
+                      dev = "png",
+                      dpi = 300)
+```
+
+```{r}
+library(tidyverse)
+library(here)
+library(kableExtra)
+library(hablar)
+library(patchwork)
+```
+
+## Analysis plan and questions  
+The purpose of this analysis is to examine the antibody data from the R03 PNG cohort. The samples correspond to the first time point (i.e. T0) in this cohort and included young children that were infected and uninfected with *P. vivax* when they were surveyed. This analysis aims to examine the population level seroreactivity to a panel of 342 antigens and associations with age, molecular force of infection (molFOB), lifetime exposure (molFOB x age) and presence of Pv infection. 
+
+We are interested in exploring the following:
+
+1. Immunogenicity of proteins
+    + What is the proportion of the 342 antigens that were "immunogenic" i.e. seroreactive?
+
+2. Epidemiological trends: age, Pv exposure, Pv infection
+    + Is there a correlation with age and antibody levels?
+    + Is there a correlation with exposure and antibody levels?
+    + Is there a correlation with infection status and antibody levels?
+    
+The datasets provided from Dr. Ramin Mazhari were the following:
+
+  - "RO3_eppi.csv": this dataset includes the epidemiological data for each participant (*Note:* this has been edited since `bleedid1` and `bleedid2` variables were repeated in the dataset)  
+  - "RO3_Proteins.csv": this dataset includes the antibody levels for each protein assayed, these data have already been normalized based on the AlphaScreen standard curve  
+  - "RO3_FOI.csv": this dataset includes the force of infection data for the XOA children (ie baseline).
+    
+```{r}
+epi_data_orig <- read.csv(here("data/RO3_eppi_edit.csv"))
+ab_data_orig <- read.csv(here("data/RO3_Proteins.csv"))
+foi_data_orig <- read.csv(here("data/RO3_FOI.csv"))
+```
+
+## Data curation 
+#### Merge with force of infection data
+```{r}
+epi_data <- epi_data_orig %>% left_join(foi_data_orig, by = "bleedid1")
+```
+
+#### Change age to months
+We will calculate the age in months by dividing the variable `age1` by 30.42 (*Note:* this value was provided by Ramin and can be modified if necessary).  
+```{r}
+epi_data <- epi_data %>% mutate(age_month = age1/30.42)
+```
+
+#### Rename `bleedid1` to `Pv.code` to match antibody data
+We need to rename the variables in order to be able to merge the two data sets together.  
+```{r}
+epi_data <- epi_data %>% rename_at("bleedid1", ~"Pv.code")
+```
+
+#### Select only XOA and relevant epi variables
+Because the epi document has a lot of epidemiological variables, we will only keep the relevant variables for this analysis: `Pv.code`, `pvldr1`, `age_yr`, `age_month`, `bleedcode1`, `pvfoinew`, `pvfoinew_sqrt`. Use `bleedcode1` to filter, this variable has the following categories: XOA and XOC and allows us to filter accordingly.   
+(*Note:* we always keep the original document and can go back to this at any time if we want to look at other epidemiologial variables). 
+
+The total number of participants with XOA and XOC bleedcodes are: `r kable(epi_data %>% group_by(bleedcode1) %>% tally()) %>% kable_styling()`  
+```{r}
+epi_data_XOA <- epi_data %>% filter(bleedcode1 == "XOA") %>% select(Pv.code, pvldr1, age_yr, age_month, bleedcode1, pvfoinew, pvfoinew_sqrt) 
+```
+  
+#### Select only XOA in antibody dataset
+Now we do the same for the antibody data set, by filtering based on `Pv.code`. Both data sets should have 183 observations, corresponding to the N=183 "XOA" children.     
+```{r}
+ab_data_XOA <- ab_data_orig %>% filter(Pv.code %in% epi_data_XOA$Pv.code)
+```
+
+#### Log10 transformation  
+Now we will log10-transform the antibody data for downstream analyses.     
+```{r}
+log10ab_data <- ab_data_XOA %>% mutate_each(funs(log10 = log10(.)), -Pv.code)
+log10ab_data <- log10ab_data %>% rationalize() #this converts -Inf to NA missing values
+log10ab_data <- log10ab_data %>% select(-PVX_092275:-PVX_002550_3o3) 
+```
+
+#### Calculate lifetime exposure
+We will calculate lifetime exposure as the product of `age_yr` and `pvfoinew`, as per [Franca et al 2017](https://doi.org/10.7554/eLife.28673). *Note:* there are 5 missing values (no `pvfoinew`/molFOB data).  
+```{r}
+epi_data_XOA <- epi_data_XOA %>% 
+  mutate(lifetime_exp = age_yr * pvfoinew)
+```
+
+#### Final analysis dataset
+```{r}
+merged_data <- log10ab_data %>% left_join(epi_data_XOA, by = "Pv.code")
+
+merged_data <- merged_data %>% relocate(pvldr1:lifetime_exp, .after = Pv.code)
+```
+
+## Protein seroreactivity
+In order to determine how many of the 342 proteins were "seroreactive", we will determine the proportion of children with antibody levels higher than the half of the lowest non-negative value per antigen. 
+
+```{r}
+protein_cutoffs <- merged_data %>% 
+                        select(-Pv.code:-lifetime_exp) %>% 
+                        summarise_each(list(~ min(.[. >= 0]/2, na.rm = T))) %>% 
+                        gather(key = "protein", value = "cutoff")
+```
+
+```{r protein-cutoffs}
+protein_cutoffs %>% 
+  ggplot(aes(x = "protein", y = cutoff)) + 
+    geom_boxplot() 
+```
+
+Now that we have the protein cut-off values, we will replace any NAs (due to log10 transformation of 0's) with the cut-off for that particular protein. 
+```{r}
+merged_data <- merged_data %>% 
+  mutate_at(vars(-Pv.code:-lifetime_exp), funs(replace_na(., subset(protein_cutoffs, protein == quote(.))$cutoff)))
+```
+
+
+Next we can calculate the proportion of immunogenic proteins at the population level. 
+```{r}
+seroreactive_summary <- merged_data %>% 
+  select(-Pv.code:-lifetime_exp) %>% 
+  # calculate the n seroreactive (ie above the antigen cutoff) and n participants 
+  summarise_each(funs(n_seroreactive = sum(. > subset(protein_cutoffs, protein == quote(.))$cutoff),
+                      n_participants = sum(!is.na(.)))) %>% 
+  # go from wide to long
+  gather(stat, val) %>% 
+  separate(stat, into = c("var", "stat"), sep = "_n_") %>% 
+  spread(stat, val) %>% 
+  rename_at("var", ~"protein") %>% 
+  rename_at("seroreactive", ~"n_seroreactive") %>% 
+  rename_at("participants", ~"n_participants") %>% 
+  # calculate proportion
+  mutate(prop_seroreactive = n_seroreactive/n_participants)
+```
+
+
+```{r}
+seroreactive_summary %>% summarise(min = min(prop_seroreactive),
+                                   med = median(prop_seroreactive),
+                                   avg = mean(prop_seroreactive),
+                                   max = max(prop_seroreactive))
+```
+The summary statistics for the seroprevalence of each protein (i.e., the proportion of children (N=183) with antibody levels higher than the background **per** antigen) are: `r kable(seroreactive_summary %>% summarise(min = min(prop_seroreactive), med = median(prop_seroreactive), avg = mean(prop_seroreactive), max = max(prop_seroreactive))) %>% kable_styling()` 
+
+```{r supp-fig1a}
+supp_fig1a <- seroreactive_summary %>% 
+  ggplot(aes(x = reorder(protein, prop_seroreactive), y = prop_seroreactive)) + 
+    geom_bar(stat = "identity", width = 1) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(x = "Protein (N=342)", y = "Proportion of children above background") +
+    theme(axis.text.x = element_blank())
+
+supp_fig1a
+```
+Next we look at individual seroreactivity to the protein panel by summarizing the data for each child and calculating the proportion of proteins where Ab levels were above background.
+```{r}
+seroreactive_summary_perchild <- merged_data %>% 
+  group_by(Pv.code) %>% 
+  select(-pvldr1:-lifetime_exp) %>% 
+  # calculate the n seroreactive proteins for each child 
+  summarise_each(funs(n_seroreactive = sum(. > subset(protein_cutoffs, protein == quote(.))$cutoff))) %>% 
+  mutate(n_proteins = rowSums(select(., -"Pv.code")),
+         prop_reactive = n_proteins/342) 
+```
+
+The summary statistics for the proportion of individual seroreactivity to the protein panel for each child are: `r kable(seroreactive_summary_perchild %>% summarise(min = min(prop_reactive), med = median(prop_reactive), avg = mean(prop_reactive), max = max(prop_reactive))) %>% kable_styling()` 
+
+The summary statistics for the number of seroreactive proteins that a child had Ab levels above bkgd: `r kable(seroreactive_summary_perchild %>% summarise(min = min(n_proteins), med = median(n_proteins), avg = mean(n_proteins), max = max(n_proteins))) %>% kable_styling()`
+
+There were 4 children with seroreactivity to <50% of the panel
+```{r}
+seroreactive_summary_perchild %>% select(Pv.code, prop_reactive) %>% filter(prop_reactive < 0.5)
+```
+*Note:* XOA098 and XOA160 were previously noted during the AlphaScreen as very low responders, so this is consistent with the previous observation.
+
+```{r supp-fig1b}
+supp_fig1b <- seroreactive_summary_perchild %>% 
+  ggplot(aes(x = reorder(Pv.code, prop_reactive), y = prop_reactive)) + 
+  geom_bar(stat = "identity", width = 1) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Child (N = 183)", y = "Individual seroreactivity to 342 proteins") +
+  theme_classic() +
+  theme(axis.text.x = element_blank())
+
+supp_fig1b
+``` 
+##### **Supplementary Figure 1**
+```{r supp-fig1, fig.width=10, fig.height=4}
+supp_fig1a + supp_fig1b + plot_annotation(tag_levels = "a")
+
+# ggsave("paper_figure2.pdf", width = 10, height = 4)
+# ggsave("paper_figure2.jpeg", width = 10, height = 4)
+```
+
+##### **Result 1:** the entire panel of 342 *P. vivax* proteins are highly immunogenic in this population (>50% seroreactivity higher than the background per antigen). On an individual-level, the majority of children had Ab levels above background except for 4 that were seroreactive to <50% of the panel. 
+
+
+## Association between age and antibody levels: analysis **per** antigen
+#### Association between age and antibody levels to **each** *P. vivax* protein
+We calculate Spearman's rho correlation coefficient to determine whether there was a significant association between age and antibody levels for each protein. Then we will report on the proportion of proteins with a significant association.
+```{r}
+rho_agevsab <- merged_data %>% 
+  select(-Pv.code:-age_yr, -bleedcode1:-lifetime_exp) %>% 
+  summarise_each(list(spearmans_rho = ~cor.test(age_month, ., method = "spearman", exact = F, alternative = "two.sided")$estimate,
+                 pvalue = ~cor.test(age_month, ., method = "spearman", exact = F, alternative = "two.sided")$p.value)) %>% 
+  gather(stat, val) %>% 
+  separate(stat, into = c("var", "stat"), sep = "_log10_") %>% 
+  spread(stat, val) %>% 
+  rename_at("var", ~"protein") %>% 
+  filter(protein != "age_month_pvalue" & protein != "age_month_spearmans_rho") %>%
+  select(-`<NA>`) %>% 
+  mutate(adj_pvalue = p.adjust(pvalue, method = "bonferroni"))
+```
+##### **Result:** There were no significant associations between antibody levels and age for any protein, with `r rho_agevsab %>% filter(adj_pvalue < 0.05) %>% count() %>% as.integer()` *P. vivax* proteins with Spearman's rank correlation adjusted *p*-value < 0.05 (all adjusted p-values > 0.05 after Bonferroni correction for multiple comparisons).
+
+
+## Association between molFOB (surrogate for lifetime exposure) and antibody levels
+#### Association between **molFOB** and antibody levels to **each** *P. vivax* protein  
+```{r}
+rho_agevsmolfob <- merged_data %>% 
+  select(-Pv.code:-pvfoinew, -lifetime_exp) %>% 
+  summarise_each(list(spearmans_rho = ~cor.test(pvfoinew_sqrt, ., method = "spearman", exact = F, alternative = "two.sided")$estimate,
+                 pvalue = ~cor.test(pvfoinew_sqrt, ., method = "spearman", exact = F, alternative = "two.sided")$p.value)) %>% 
+  gather(stat, val) %>% 
+  separate(stat, into = c("var", "stat"), sep = "_log10_") %>% 
+  spread(stat, val) %>% 
+  rename_at("var", ~"protein") %>% 
+  filter(protein != "pvfoinew_pvalue" & protein != "pvfoinew_spearmans_rho") %>%
+  select(-`<NA>`) %>% 
+  mutate(adj_pvalue = p.adjust(pvalue, method = "bonferroni"))
+```
+##### **Result:** there were no significant associations between antibody levels and molFOB (n=`r rho_agevsmolfob %>% filter(adj_pvalue < 0.05) %>% count() %>% as.integer()`) of the 342 *P. vivax* proteins with Spearman's rank correlation adjusted *p*-value < 0.05 (all adjusted p-values > 0.05 after Bonferroni correction for multiple comparisons).   
+
+## Association between infection status and antibody levels 
+We use a two-sided unpaired t-test to determine whether there was a significant association between infection status and antibody levels for each protein. Then we will report on the proportion of proteins with a significant association.
+```{r}
+ttest_agevinf <- merged_data %>% 
+  select(-Pv.code, -age_yr:-lifetime_exp) %>% 
+  summarise_each(list(stat = ~t.test(pvldr1, .)$statistic,
+                      pvalue = ~t.test(pvldr1, .)$p.value)) %>% 
+  gather(stat, val) %>% 
+  separate(stat, into = c("var", "stat"), sep = "_log10_") %>% 
+  spread(stat, val) %>% 
+  rename_at("var", ~"protein") %>% 
+  rename_at("stat", ~"tstat") %>% 
+  filter(protein != "pvldr1_pvalue" & protein != "pvldr1_stat") %>%
+  select(-`<NA>`) %>% 
+  mutate(adj_pvalue = p.adjust(pvalue, method = "bonferroni"))
+```
+
+```{r}
+ttest_agevinf %>% 
+  filter(adj_pvalue<0.05) %>% 
+  summarise(min = min(adj_pvalue), mean = mean(adj_pvalue), max = max(adj_pvalue))
+```
+
+The t-test statistic was always negative (ie lower mean IgG levels in uninfected v infected children)
+```{r tstat-agevinf}
+ttest_agevinf %>% 
+  filter(adj_pvalue < 0.05) %>% 
+  ggplot(aes(x="", y=tstat)) + geom_boxplot()
+```
+##### **Result:** there was significantly lower antibody levels in uninfected children compared to infected children for `r ttest_agevinf %>% filter(adj_pvalue < 0.05) %>% count() %>% as.integer()` (`r scales::percent(ttest_agevinf %>% filter(adj_pvalue < 0.05) %>% count() %>% as.integer()/342)`) of the 342 *P. vivax* proteins. 
+
+### Save final dataset for future
+```{r}
+saveRDS(merged_data, "data/R03_merged_log10Ab_epi_final_2022-09-09.rds")
+write.csv(merged_data, "data/R03_merged_log10Ab_epi_final_2022-09-09.csv", row.names = F)
+```
