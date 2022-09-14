@@ -212,7 +212,7 @@ supp_fig1a + supp_fig1b + plot_annotation(tag_levels = "a")
 # ggsave("paper_figure2.jpeg", width = 10, height = 4)
 ```
 
-##### **Result 1:** the entire panel of 342 *P. vivax* proteins are highly immunogenic in this population (>50% seroreactivity higher than the background per antigen). On an individual-level, the majority of children had Ab levels above background except for 4 that were seroreactive to <50% of the panel. 
+##### **Result:** the entire panel of 342 *P. vivax* proteins are highly immunogenic in this population (>50% seroreactivity higher than the background per antigen). On an individual-level, the majority of children had Ab levels above background except for 4 that were seroreactive to <50% of the panel. 
 
 
 ## Association between age and antibody levels: analysis **per** antigen
@@ -280,6 +280,7 @@ ttest_agevinf %>%
   filter(adj_pvalue < 0.05) %>% 
   ggplot(aes(x="", y=tstat)) + geom_boxplot()
 ```
+
 ##### **Result:** there was significantly lower antibody levels in uninfected children compared to infected children for `r ttest_agevinf %>% filter(adj_pvalue < 0.05) %>% count() %>% as.integer()` (`r scales::percent(ttest_agevinf %>% filter(adj_pvalue < 0.05) %>% count() %>% as.integer()/342)`) of the 342 *P. vivax* proteins. 
 
 ### Save final dataset for future
